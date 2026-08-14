@@ -1,0 +1,12 @@
+node_modules
+data
+test
+.env
+*.log
+.git
+frontend/node_modules
+frontend/src
+frontend/vite.config.js
+frontend/package.json
+frontend/package-lock.json
+frontend/index.html

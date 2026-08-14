@@ -1,0 +1,31 @@
+{
+  "name": "novel-site",
+  "version": "1.0.0",
+  "description": "自托管小说存储与阅读站点 (Node.js + Express + SQLite, 强制 TOTP 2FA)",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "DATA_DIR=$(mktemp -d) node --test --test-concurrency=1 \"test/*.test.js\""
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "adm-zip": "^0.6.0",
+    "archiver": "^7.0.1",
+    "better-sqlite3": "^11.10.0",
+    "compression": "^1.8.1",
+    "cookie-parser": "^1.4.7",
+    "express": "^4.21.2",
+    "express-session": "^1.18.1",
+    "fast-xml-parser": "^5.10.1",
+    "helmet": "^8.0.0",
+    "multer": "^1.4.5-lts.1",
+    "qrcode": "^1.5.4",
+    "speakeasy": "^2.0.0"
+  },
+  "devDependencies": {
+    "supertest": "^7.2.2"
+  }
+}

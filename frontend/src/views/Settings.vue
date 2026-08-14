@@ -9,10 +9,40 @@ const rcCode = ref('');
 const rcResult = ref([]);
 const d2Code = ref('');
 const disabling = ref(false);
+const en2faStep = ref(0);       // 0=未开始 1=已获取secret 2=已确认
+const en2faQr = ref('');
+const en2faSecret = ref('');
+const en2faCode = ref('');
+const enabling = ref(false);
 
 onMounted(async () => {
   try { const d = await api.get('/api/auth/me'); me.value = d.user; } catch (e) {}
 });
+
+async function startEnable2FA() {
+  en2faStep.value = 0;
+  try {
+    const d = await api.post('/api/auth/setup-2fa', {});
+    en2faSecret.value = d.secret;
+    en2faQr.value = d.qr;
+    en2faStep.value = 1;
+  } catch (e) { toast(e.message, true); }
+}
+
+async function confirmEnable2FA() {
+  if (!en2faCode.value.trim()) { toast('请输入 6 位动态码', true); return; }
+  enabling.value = true;
+  try {
+    const d = await api.post('/api/auth/enable-2fa', { code: en2faCode.value.trim() });
+    toast('两步验证已开启');
+    rcResult.value = d.recovery_codes || [];
+    en2faStep.value = 0;
+    en2faCode.value = '';
+    const m = await api.get('/api/auth/me');
+    me.value = m.user;
+  } catch (e) { toast(e.message, true); }
+  enabling.value = false;
+}
 
 async function changePassword() {
   try {
@@ -76,6 +106,21 @@ async function disable2FA() {
           <span v-for="c in rcResult" :key="c" class="rc-item">{{ c }}</span>
         </div>
 
+        <div v-if="me && !me.twofa_enabled">
+          <hr class="divider">
+          <h3>开启两步验证</h3>
+          <p class="hint">开启后登录需要输入验证器 App 的 6 位动态码，账号更安全。</p>
+          <template v-if="en2faStep === 0">
+            <button class="btn btn-primary" @click="startEnable2FA">开始开启</button>
+          </template>
+          <template v-else>
+            <div class="qr-box"><img :src="en2faQr" alt="QR"></div>
+            <p class="hint">无法扫码时手动输入密钥：<b>{{ en2faSecret }}</b></p>
+            <div class="field"><label>验证器动态码</label><input v-model="en2faCode" inputmode="numeric" placeholder="6 位动态码" @keyup.enter="confirmEnable2FA"></div>
+            <button class="btn btn-primary" :disabled="enabling" @click="confirmEnable2FA">{{ enabling ? '开启中...' : '确认开启' }}</button>
+          </template>
+        </div>
+
         <div v-if="me && me.twofa_enabled">
           <hr class="divider">
           <h3>关闭两步验证</h3>
@@ -98,6 +143,8 @@ async function disable2FA() {
 .info-row span { color: var(--ink-faint); }
 .divider { border: none; border-top: 1px solid var(--line); margin: 26px 0; }
 .hint { font-size: 12.5px; color: var(--ink-dim); line-height: 1.7; margin-bottom: 14px; }
+.qr-box { display: flex; justify-content: center; margin: 14px 0; }
+.qr-box img { width: 180px; height: 180px; border-radius: 12px; border: 1px solid var(--line); }
 .rc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 16px; }
 .rc-item { background: var(--brand-soft); border: 1px solid rgba(124,92,191,.18); border-radius: 8px; padding: 8px; text-align: center; font-family: ui-monospace, monospace; font-size: 13px; }
 /* 移动端适配 */

@@ -15,14 +15,16 @@ const visibleChapters = computed(() => showAllChapters.value ? chapters.value : 
 const loading = ref(true);
 const downloadOpen = ref(false);
 
-const novelId = computed(() => parseInt(route.params.id, 10));
+// 支持 id 或书名（URL 友好）：/book/9 或 /book/冬日重现
+const novelKey = computed(() => route.params.id);
+const apiPath = computed(() => '/api/novels/' + encodeURIComponent(novelKey.value));
 
 onMounted(async () => {
   try {
-    const d = await api.get('/api/novels/' + novelId.value);
+    const d = await api.get(apiPath.value);
     novel.value = d.novel;
     document.title = d.novel.title + ' · 喵的书架';
-    const c = await api.get(`/api/novels/${novelId.value}/chapters`);
+    const c = await api.get(apiPath.value + '/chapters');
     chapters.value = c.chapters;
   } catch (e) {
     toast(e.message, true);
@@ -32,19 +34,20 @@ onMounted(async () => {
 
 function openReader(chId) {
   const target = chId || novel.value.last_chapter_id;
-  router.push({ path: '/read/' + novelId.value, query: target ? { ch: target } : {} });
+  router.push({ path: '/read/' + encodeURIComponent(novel.value.title), query: target ? { ch: target } : {} });
 }
 
 async function toggleShelf() {
   try {
-    if (novel.value.in_shelf) { await api.del('/api/me/bookshelf/' + novelId.value); novel.value.in_shelf = false; toast('已移出书架'); }
-    else { await api.post('/api/me/bookshelf/' + novelId.value, {}); novel.value.in_shelf = true; toast('已加入书架'); }
+    const nid = novel.value.id;
+    if (novel.value.in_shelf) { await api.del('/api/me/bookshelf/' + nid); novel.value.in_shelf = false; toast('已移出书架'); }
+    else { await api.post('/api/me/bookshelf/' + nid, {}); novel.value.in_shelf = true; toast('已加入书架'); }
   } catch (e) { toast(e.message, true); }
 }
 
 function downloadBook(format) {
   downloadOpen.value = false;
-  const url = `/api/novels/${novelId.value}/download?format=${format}`;
+  const url = `/api/novels/${encodeURIComponent(novel.value.title)}/download?format=${format}`;
   // 方案1：直接 window.open（同源，带 cookie 鉴权；兼容性最好）
   const w = window.open(url, '_blank');
   if (w) {

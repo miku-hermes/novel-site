@@ -89,7 +89,7 @@ onMounted(() => { loadRecent(); loadLibrary(); });
         <div v-if="recent.length" class="recent-section">
           <div class="section-title">最近阅读</div>
           <div class="cover-strip">
-            <div v-for="b in recent" :key="b.id" class="strip-item" @click="router.push('/book/' + b.id)">
+            <div v-for="b in recent" :key="b.id" class="strip-item" @click="router.push('/book/' + encodeURIComponent(b.title))">
               <BookCover :title="b.title" :cover-url="b.cover_url" :author="b.author" :progress="b.progress || 0" :show-progress="true" size="sm" />
               <div class="strip-title">{{ b.title }}</div>
               <div class="strip-sub">{{ b.author || '佚名' }} · {{ fmtWords(b.words_count) }} · {{ b.chapter_count }} 章</div>

@@ -12,14 +12,11 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
-      # 生产必改：会话签名密钥（>=32字符随机串）
-      - SESSION_SECRET=change-me-to-a-long-random-string
-      # 备份加密口令（恢复/下载备份时需要）
-      - BACKUP_PASSWORD=change-me-backup-password
-      # 是否允许新用户注册
-      - ALLOW_REGISTER=true
-      # 站点标题
-      - SITE_NAME=喵的书架
+      # 从 .env 读取（生产密钥不入库）
+      - SESSION_SECRET=${SESSION_SECRET}
+      - BACKUP_PASSWORD=${BACKUP_PASSWORD}
+      - ALLOW_REGISTER=${ALLOW_REGISTER:-true}
+      - SITE_NAME=${SITE_NAME:-喵的书架}
     # 内网访问，不暴露宿主机端口，由 1Panel 反代
     expose:
       - "3000"

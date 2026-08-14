@@ -106,8 +106,8 @@ router.post('/login', rateLimit({ max: 30, keyPrefix: 'login' }), (req, res) => 
   if (user.status !== 'active') return res.status(403).json({ error: '账号已被禁用' });
 
   if (!user.twofa_enabled) {
-    // 未绑定 2FA：先要求绑定（强制），再完成登录
-    return res.json({ need_2fa_setup: true, pending_token: issuePending(user) });
+    // 未绑定 2FA：直接完成登录（2FA 为可选）
+    return finalizeLogin(req, res, user);
   }
   // 已绑定：等待 TOTP 验证
   return res.json({ need_2fa: true, pending_token: issuePending(user) });
@@ -135,20 +135,33 @@ router.post('/verify-2fa', rateLimit({ max: 20, keyPrefix: '2fa' }), (req, res) 
   return res.status(401).json({ error: '验证码错误' });
 });
 
-// ---------------- 绑定 2FA（登录前强制绑定流程使用） ----------------
-// step1: 获取 secret + QR（需要 pending token）
+// ---------------- 绑定 2FA（2FA 可选；支持登录时 pending_token 流程 或 已登录用户主动开启） ----------------
+// step1: 获取 secret + QR
 router.post('/setup-2fa', rateLimit({ max: 10, keyPrefix: 'setup2fa' }), (req, res) => {
+  let user = null;
   const { pending_token } = req.body || {};
-  const pend = pending2fa.get(pending_token);
-  if (!pend || pend.expires < Date.now()) return res.status(400).json({ error: '会话已过期，请重新登录' });
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(pend.userId);
+  if (pending_token) {
+    const pend = pending2fa.get(pending_token);
+    if (!pend || pend.expires < Date.now()) return res.status(400).json({ error: '会话已过期，请重新登录' });
+    user = db.prepare('SELECT * FROM users WHERE id = ?').get(pend.userId);
+    // 暂存 secret 到 pending 记录
+    const { base32, otpauth_url } = generateTOTPSecret(user.username);
+    pend.secret = base32;
+    pending2fa.set(pending_token, pend);
+    qrcode.toDataURL(otpauth_url, { margin: 1 }, (err, url) => {
+      if (err) return res.status(500).json({ error: '生成二维码失败' });
+      res.json({ secret: base32, qr: url });
+    });
+    return;
+  }
+  // 已登录用户主动开启
+  if (!req.session.userId) return res.status(401).json({ error: '未登录' });
+  user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.session.userId);
   if (!user) return res.status(401).json({ error: '账号不可用' });
   if (user.twofa_enabled) return res.status(400).json({ error: '已绑定 2FA' });
-
   const { base32, otpauth_url } = generateTOTPSecret(user.username);
-  // 暂存到 pending 记录
-  pend.secret = base32;
-  pending2fa.set(pending_token, pend);
+  // 暂存到 session
+  req.session.pending2faSecret = base32;
   qrcode.toDataURL(otpauth_url, { margin: 1 }, (err, url) => {
     if (err) return res.status(500).json({ error: '生成二维码失败' });
     res.json({ secret: base32, qr: url });
@@ -157,23 +170,35 @@ router.post('/setup-2fa', rateLimit({ max: 10, keyPrefix: 'setup2fa' }), (req, r
 
 // step2: 确认绑定，返回恢复码
 router.post('/enable-2fa', rateLimit({ max: 10, keyPrefix: 'enable2fa' }), (req, res) => {
-  const { pending_token, code } = req.body || {};
-  const pend = pending2fa.get(pending_token);
-  if (!pend || pend.expires < Date.now()) return res.status(400).json({ error: '会话已过期，请重新登录' });
-  if (!pend.secret) return res.status(400).json({ error: '请先获取二维码' });
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(pend.userId);
+  const { code } = req.body || {};
+  let user = null;
+  let secret = null;
+  const { pending_token } = req.body || {};
+  if (pending_token) {
+    const pend = pending2fa.get(pending_token);
+    if (!pend || pend.expires < Date.now()) return res.status(400).json({ error: '会话已过期，请重新登录' });
+    if (!pend.secret) return res.status(400).json({ error: '请先获取二维码' });
+    user = db.prepare('SELECT * FROM users WHERE id = ?').get(pend.userId);
+    secret = pend.secret;
+  } else {
+    if (!req.session.userId) return res.status(401).json({ error: '未登录' });
+    user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.session.userId);
+    if (!req.session.pending2faSecret) return res.status(400).json({ error: '请先获取二维码' });
+    secret = req.session.pending2faSecret;
+  }
   if (!user || user.status !== 'active') return res.status(401).json({ error: '账号不可用' });
   if (user.twofa_enabled) return res.status(400).json({ error: '已绑定 2FA' });
 
-  if (!verifyTOTP(pend.secret, String(code || '').trim())) {
+  if (!verifyTOTP(secret, String(code || '').trim())) {
     return res.status(401).json({ error: '验证码错误' });
   }
-  consumePending(pending_token);
+  if (pending_token) consumePending(pending_token);
+  else delete req.session.pending2faSecret;
   const recovery = generateRecoveryCodes(10);
   const hashed = recovery.map(hashRecoveryCode);
   db.prepare('UPDATE users SET twofa_secret = ?, twofa_enabled = 1, recovery_codes = ? WHERE id = ?')
-    .run(pend.secret, JSON.stringify(hashed), user.id);
-  user.twofa_secret = pend.secret;
+    .run(secret, JSON.stringify(hashed), user.id);
+  user.twofa_secret = secret;
   user.twofa_enabled = 1;
   user.recovery_codes = JSON.stringify(hashed);
   audit(user, 'enable_2fa', '已绑定 2FA', req.ip);

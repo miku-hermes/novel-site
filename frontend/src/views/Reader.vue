@@ -5,7 +5,9 @@ import { api, fmtWords } from '../utils/api';
 
 const route = useRoute();
 const router = useRouter();
-const novelId = computed(() => parseInt(route.params.id, 10));
+// 支持 id 或书名（URL 友好）：/read/9 或 /read/冬日重现
+const novelKey = computed(() => route.params.id);
+const apiPath = computed(() => '/api/novels/' + encodeURIComponent(novelKey.value));
 const novel = ref(null);
 const chapters = ref([]);
 const currentIdx = ref(-1);
@@ -25,8 +27,8 @@ const bodyClass = computed(() => 'reader-theme-' + theme.value);
 onMounted(async () => {
   try {
     const [d1, d2] = await Promise.all([
-      api.get('/api/novels/' + novelId.value),
-      api.get('/api/novels/' + novelId.value + '/chapters'),
+      api.get(apiPath.value),
+      api.get(apiPath.value + '/chapters'),
     ]);
     novel.value = d1.novel;
     chapters.value = d2.chapters;
@@ -48,10 +50,10 @@ async function loadChapter(idx) {
   currentIdx.value = idx;
   const ch = chapters.value[idx];
   try {
-    const d = await api.get(`/api/novels/${novelId.value}/chapters/${ch.id}`);
+    const d = await api.get(`${apiPath.value}/chapters/${ch.id}`);
     content.value = d.chapter.content || '（本章为空）';
-    api.put('/api/me/progress/' + novelId.value, { chapter_id: ch.id, progress: 0 }).catch(() => {});
-    router.replace({ path: '/read/' + novelId.value, query: { ch: ch.id } });
+    api.put('/api/me/progress/' + novel.value.id, { chapter_id: ch.id, progress: 0 }).catch(() => {});
+    router.replace({ path: '/read/' + encodeURIComponent(novel.value.title), query: { ch: ch.id } });
     window.scrollTo({ top: 0 });
   } catch (e) { content.value = e.message; }
 }
@@ -72,7 +74,7 @@ document.addEventListener('keydown', e => {
 <template>
   <div :class="bodyClass" class="reader-root">
     <div class="reader-top">
-      <button class="back-btn" @click="router.push('/book/' + novelId)">← 书城</button>
+      <button class="back-btn" @click="router.push('/book/' + encodeURIComponent(novel && novel.title ? novel.title : ''))">← 书城</button>
       <div class="reader-heading">
         <div class="book-name">{{ novel ? novel.title : '' }}</div>
         <div class="ch-name">{{ chapters[currentIdx] ? chapters[currentIdx].title : '' }}</div>

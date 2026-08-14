@@ -28,6 +28,11 @@ async function doLogin() {
   if (!loginForm.value.username || !loginForm.value.password) { errMsg.value = '请输入用户名和密码'; return; }
   try {
     const d = await api.post('/api/auth/login', loginForm.value);
+    if (d.ok || !d.pending_token) {
+      // 2FA 可选：未开启时直接登录成功
+      router.push('/home');
+      return;
+    }
     pendingToken.value = d.pending_token;
     if (d.need_2fa_setup) { await loadSetupQr(); }
     else if (d.need_2fa) { view.value = '2fa'; }

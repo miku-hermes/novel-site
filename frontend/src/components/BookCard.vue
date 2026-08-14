@@ -7,7 +7,7 @@ const router = useRouter();
 </script>
 
 <template>
-  <div class="book-card" @click="router.push('/book/' + book.id)">
+  <div class="book-card" @click="router.push('/book/' + encodeURIComponent(book.title))">
     <BookCover
       :title="book.title"
       :cover-url="book.cover_url"

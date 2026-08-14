@@ -34,35 +34,59 @@ async function registerUser(u) {
 }
 
 async function login(u) {
-  // 未绑定 2FA：登录返回 need_2fa_setup + pending_token
+  // 2FA 可选：注册后未开启 2FA 的用户直接登录成功
   const r1 = await request(app).post('/api/auth/login').send({ username: u.username, password: u.password });
   assert.strictEqual(r1.status, 200);
+  const loginJar = cookieJar(r1); // 含 csrf_token
+  if (r1.body.ok) {
+    // 未开 2FA：直接成功
+    const csrfFinal = (loginJar.match(/csrf_token=([^;]+)/) || [])[1] || '';
+    return { cookie: loginJar, csrf: csrfFinal };
+  }
+  // 已开 2FA（或旧强制流程）：走完整绑定+验证
   assert.ok(r1.body.pending_token, '应返回 pending_token');
   const pending = r1.body.pending_token;
-  // 绑定 2FA：setup-2fa 拿 secret（用 pending_token，不依赖 session/csrf）
-  const r2 = await request(app).post('/api/auth/setup-2fa').send({ pending_token: pending });
-  assert.strictEqual(r2.status, 200, JSON.stringify(r2.body));
-  const { secret } = r2.body;
-  // enable-2fa 确认绑定
+  let secret = null;
   const speakeasy = require('speakeasy');
-  const r3 = await request(app)
-    .post('/api/auth/enable-2fa')
-    .send({ pending_token: pending, code: speakeasy.totp({ secret, encoding: 'base32' }) });
-  assert.strictEqual(r3.status, 200, JSON.stringify(r3.body));
-  // 重新登录走 2FA 验证
+  if (r1.body.need_2fa_setup) {
+    const r2 = await request(app).post('/api/auth/setup-2fa').send({ pending_token: pending });
+    assert.strictEqual(r2.status, 200, JSON.stringify(r2.body));
+    secret = r2.body.secret;
+    const r3 = await request(app)
+      .post('/api/auth/enable-2fa')
+      .send({ pending_token: pending, code: speakeasy.totp({ secret, encoding: 'base32' }) });
+    assert.strictEqual(r3.status, 200, JSON.stringify(r3.body));
+  }
+  // 重新登录，走 2FA 验证
   const r4 = await request(app).post('/api/auth/login').send({ username: u.username, password: u.password });
   assert.ok(r4.body.pending_token);
-  const loginJar = cookieJar(r4); // 含 csrf_token
-  const r5 = await request(app)
+  const jar4 = cookieJar(r4);
+  // 若 r4 仍要求 setup，则先 setup 拿 secret
+  if (r4.body.need_2fa_setup && !secret) {
+    const s = await request(app).post('/api/auth/setup-2fa').send({ pending_token: r4.body.pending_token });
+    secret = s.body.secret;
+    const en = await request(app).post('/api/auth/enable-2fa').send({ pending_token: r4.body.pending_token, code: speakeasy.totp({ secret, encoding: 'base32' }) });
+    assert.strictEqual(en.status, 200);
+    const r5 = await request(app).post('/api/auth/login').send({ username: u.username, password: u.password });
+    const jar5 = cookieJar(r5);
+    const r6 = await request(app)
+      .post('/api/auth/verify-2fa')
+      .set('Cookie', jar5)
+      .set('x-csrf-token', (jar5.match(/csrf_token=([^;]+)/) || [])[1] || '')
+      .send({ pending_token: r5.body.pending_token, code: speakeasy.totp({ secret, encoding: 'base32' }) });
+    assert.strictEqual(r6.status, 200, JSON.stringify(r6.body));
+    return { cookie: [jar5, cookieJar(r6)].filter(Boolean).join('; '), csrf: (jar5.match(/csrf_token=([^;]+)/) || [])[1] || '' };
+  }
+  assert.ok(secret, '应已获取 secret');
+  const r7 = await request(app)
     .post('/api/auth/verify-2fa')
-    .set('Cookie', loginJar)
-    .set('x-csrf-token', (loginJar.match(/csrf_token=([^;]+)/) || [])[1] || '')
+    .set('Cookie', jar4)
+    .set('x-csrf-token', (jar4.match(/csrf_token=([^;]+)/) || [])[1] || '')
     .send({ pending_token: r4.body.pending_token, code: speakeasy.totp({ secret, encoding: 'base32' }) });
-  assert.strictEqual(r5.status, 200, JSON.stringify(r5.body));
-  const verifyJar = cookieJar(r5); // 含 novelsite.sid
-  // 真实浏览器累积两个响应 cookie：login 的 csrf + verify 的 sid
-  const finalCookie = [loginJar, verifyJar].filter(Boolean).join('; ');
-  const csrfFinal = (loginJar.match(/csrf_token=([^;]+)/) || [])[1] || '';
+  assert.strictEqual(r7.status, 200, JSON.stringify(r7.body));
+  const verifyJar = cookieJar(r7);
+  const finalCookie = [jar4, verifyJar].filter(Boolean).join('; ');
+  const csrfFinal = (jar4.match(/csrf_token=([^;]+)/) || [])[1] || '';
   return { cookie: finalCookie, csrf: csrfFinal };
 }
 
@@ -94,10 +118,15 @@ describe('认证与 2FA', () => {
     const res = await request(app).post('/api/auth/login').send({ username: 'admin_test', password: 'Wrong1234' });
     assert.strictEqual(res.status, 401);
   });
-  test('me 接口返回 twofa_enabled', async () => {
+  test('me 接口返回 twofa_enabled（未开启时 false）', async () => {
     const res = await request(app).get('/api/auth/me').set('Cookie', adminCookie);
     assert.strictEqual(res.status, 200);
-    assert.strictEqual(res.body.user.twofa_enabled, true);
+    assert.strictEqual(res.body.user.twofa_enabled, false);
+  });
+  test('未开启 2FA 的用户直接登录成功（2FA 可选）', async () => {
+    const res = await request(app).post('/api/auth/login').send({ username: normalUser.username, password: normalUser.password });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.body.ok, true, '未开 2FA 应直接登录成功');
   });
 });
 

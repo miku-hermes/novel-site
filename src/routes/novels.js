@@ -164,8 +164,13 @@ router.post('/', requireAuth, uploadDisk.single('file'), (req, res) => {
 });
 
 // ---------- 详情 ----------
+// 只支持书名（URL 友好）：/api/novels/冬日重现
+function findNovel(param) {
+  return db.prepare('SELECT * FROM novels WHERE title = ?').get(String(param || '').trim());
+}
+
 router.get('/:id', requireAuth, (req, res) => {
-  const row = db.prepare('SELECT * FROM novels WHERE id = ?').get(req.params.id);
+  const row = findNovel(req.params.id);
   if (!row) return res.status(404).json({ error: '小说不存在' });
   const shelf = db.prepare('SELECT 1 FROM bookshelf WHERE user_id = ? AND novel_id = ?').get(req.user.id, row.id);
   const prog = db.prepare('SELECT chapter_id, progress FROM reading_progress WHERE user_id = ? AND novel_id = ?').get(req.user.id, row.id);
@@ -229,7 +234,7 @@ router.post('/:id/cover', requireAuth, requireAdmin, uploadDisk.single('cover'),
 
 // ---------- 章节列表 ----------
 router.get('/:id/chapters', requireAuth, (req, res) => {
-  const row = db.prepare('SELECT id FROM novels WHERE id = ?').get(req.params.id);
+  const row = findNovel(req.params.id);
   if (!row) return res.status(404).json({ error: '小说不存在' });
   const chapters = db.prepare('SELECT id, novel_id, idx, title, words_count FROM chapters WHERE novel_id = ? ORDER BY idx').all(row.id);
   res.json({ chapters });
@@ -237,13 +242,15 @@ router.get('/:id/chapters', requireAuth, (req, res) => {
 
 // ---------- 章节详情 ----------
 router.get('/:id/chapters/:cid', requireAuth, (req, res) => {
-  const ch = db.prepare('SELECT * FROM chapters WHERE id = ? AND novel_id = ?').get(req.params.cid, req.params.id);
+  const row = findNovel(req.params.id);
+  if (!row) return res.status(404).json({ error: '小说不存在' });
+  const ch = db.prepare('SELECT * FROM chapters WHERE id = ? AND novel_id = ?').get(req.params.cid, row.id);
   if (!ch) return res.status(404).json({ error: '章节不存在' });
   // 记录阅读进度
   db.prepare(`INSERT INTO reading_progress (user_id, novel_id, chapter_id, progress, updated_at)
       VALUES (?, ?, ?, 0, datetime('now'))
       ON CONFLICT(user_id, novel_id) DO UPDATE SET chapter_id = excluded.chapter_id, updated_at = excluded.updated_at`)
-    .run(req.user.id, rowId(req.params.id), ch.id);
+    .run(req.user.id, row.id, ch.id);
   res.json({ chapter: { id: ch.id, novel_id: ch.novel_id, idx: ch.idx, title: ch.title, content: ch.content, words_count: ch.words_count } });
 });
 
@@ -295,7 +302,7 @@ router.delete('/chapters/:cid', requireAuth, requireAdmin, (req, res) => {
 
 // ---------- 导出下载 ----------
 router.get('/:id/download', requireAuth, (req, res) => {
-  const novel = db.prepare('SELECT * FROM novels WHERE id = ?').get(parseInt(req.params.id, 10));
+  const novel = findNovel(req.params.id);
   if (!novel) return res.status(404).json({ error: '小说不存在' });
   const chapters = db.prepare('SELECT idx, title, content FROM chapters WHERE novel_id = ? ORDER BY idx').all(novel.id);
   const format = String(req.query.format || 'txt').toLowerCase();

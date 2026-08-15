@@ -5,9 +5,5 @@ test
 *.log
 .git
 frontend/node_modules
-frontend/src
-frontend/vite.config.js
-frontend/package.json
-frontend/package-lock.json
-frontend/index.html
+frontend/dist
 data.bak-*/

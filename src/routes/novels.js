@@ -58,12 +58,31 @@ function chapterContent(ch) {
 // 磁盘临时存储（避免大文件全量进内存，1.9GB 服务器防 OOM）
 const os = require('os');
 const TMP_UPLOAD = fs.mkdtempSync(path.join(os.tmpdir(), 'novel-upload-'));
-const uploadDisk = multer({
+// 书籍上传（txt/epub）：fileFilter 提前拦截非法类型
+const uploadBook = multer({
   storage: multer.diskStorage({
     destination: TMP_UPLOAD,
     filename: (req, file, cb) => cb(null, `${Date.now()}_${crypto.randomBytes(8).toString('hex')}`),
   }),
-  limits: { fileSize: Math.max(MAX_TXT, MAX_EPUB, MAX_COVER) },
+  limits: { fileSize: Math.max(MAX_TXT, MAX_EPUB) },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    if (ext === '.txt' || ext === '.epub') return cb(null, true);
+    cb(new Error('仅支持 .txt / .epub 文件'));
+  },
+});
+// 封面上传（jpg/png/webp）
+const uploadCover = multer({
+  storage: multer.diskStorage({
+    destination: TMP_UPLOAD,
+    filename: (req, file, cb) => cb(null, `${Date.now()}_${crypto.randomBytes(8).toString('hex')}`),
+  }),
+  limits: { fileSize: MAX_COVER },
+  fileFilter: (req, file, cb) => {
+    const allowed = { 'image/jpeg': 1, 'image/png': 1, 'image/webp': 1 };
+    if (allowed[file.mimetype]) return cb(null, true);
+    cb(new Error('封面仅支持 JPG/PNG/WebP'));
+  },
 });
 
 // 并发上传信号量：同一时刻最多 2 个大文件解析，防内存峰值
@@ -144,7 +163,7 @@ router.get('/', requireAuth, (req, res) => {
 });
 
 // ---------- 创建（支持 TXT/EPUB 上传） ----------
-router.post('/', requireAuth, uploadDisk.single('file'), (req, res) => {
+router.post('/', requireAuth, uploadBook.single('file'), (req, res) => {
   const { title, author = '', description = '', tags = [], status = 'published' } = req.body || {};
   if (!title || !String(title).trim()) {
     if (req.file) safeUnlink(req.file.path);
@@ -282,7 +301,7 @@ router.delete('/:id', requireAuth, requireAdmin, (req, res) => {
 });
 
 // ---------- 封面上传（管理员） ----------
-router.post('/:id/cover', requireAuth, requireAdmin, uploadDisk.single('cover'), (req, res) => {
+router.post('/:id/cover', requireAuth, requireAdmin, uploadCover.single('cover'), (req, res) => {
   const row = db.prepare('SELECT * FROM novels WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: '小说不存在' });
   if (!req.file) return res.status(400).json({ error: '缺少封面文件' });

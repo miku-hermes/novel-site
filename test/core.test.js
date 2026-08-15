@@ -154,6 +154,23 @@ describe('小说 CRUD', () => {
       .send({ title: '普通用户的书' });
     assert.strictEqual(res.status, 201, JSON.stringify(res.body));
   });
+  test('上传非法类型被 fileFilter 拦截', async () => {
+    const res = await request(app)
+      .post('/api/novels')
+      .set('Cookie', adminCookie)
+      .set('x-csrf-token', csrf)
+      .field('title', '非法上传')
+      .attach('file', Buffer.from('not a book'), 'evil.exe');
+    assert.strictEqual(res.status, 400, '非法扩展名应被拦截，实际: ' + res.status);
+  });
+  test('进度章节不属于该小说 → 400', async () => {
+    const res = await request(app)
+      .put('/api/me/progress/' + novelId)
+      .set('Cookie', adminCookie)
+      .set('x-csrf-token', csrf)
+      .send({ chapter_id: 99999, progress: 0.5 });
+    assert.strictEqual(res.status, 400, '跨书章节应被拒绝，实际: ' + res.status);
+  });
   test('越权：普通用户改小说 → 403', async () => {
     const res = await request(app)
       .put('/api/novels/' + novelId)

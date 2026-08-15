@@ -119,6 +119,8 @@ app.use((req, res) => res.status(404).json({ error: 'Not Found' }));
 app.use((err, req, res, next) => {
   console.error('[error]', err.message);
   if (err.name === 'MulterError') return res.status(400).json({ error: `上传失败: ${err.message}` });
+  // multer fileFilter 自定义错误（普通 Error）也按 400 处理
+  if (err.message && /仅支持|封面仅支持/.test(err.message)) return res.status(400).json({ error: err.message });
   res.status(500).json({ error: '服务器内部错误' });
 });
 

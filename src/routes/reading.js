@@ -49,6 +49,11 @@ router.put('/progress/:novelId', requireAuth, (req, res) => {
   const novelId = parseInt(req.params.novelId, 10);
   if (!db.prepare('SELECT id FROM novels WHERE id = ?').get(novelId)) return res.status(404).json({ error: '小说不存在' });
   const chId = chapter_id ? parseInt(chapter_id, 10) : null;
+  // 校验 chapter_id 属于该小说（防脏数据）
+  if (chId !== null) {
+    const ch = db.prepare('SELECT id FROM chapters WHERE id = ? AND novel_id = ?').get(chId, novelId);
+    if (!ch) return res.status(400).json({ error: '章节不属于该小说' });
+  }
   const p = Math.max(0, Math.min(1, parseFloat(progress) || 0));
   db.prepare(`INSERT INTO reading_progress (user_id, novel_id, chapter_id, progress, updated_at)
       VALUES (?, ?, ?, ?, datetime('now'))

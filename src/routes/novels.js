@@ -9,7 +9,7 @@ const { requireAuth, requireAdmin } = require('./auth');
 const { rateLimit } = require('../security');
 const { parseTxt } = require('../parsers/txt');
 const { parseEpub } = require('../parsers/epub');
-const { scrapeMetadata } = require('../scrape');
+const { scrapeMetadata, applyScrapeResult } = require('../scrape');
 
 const MAX_TXT = 50 * 1024 * 1024;   // 50MB
 const MAX_EPUB = 30 * 1024 * 1024;
@@ -229,14 +229,9 @@ router.post('/', requireAuth, uploadBook.single('file'), (req, res) => {
   const novelId = tx();
   const novel = db.prepare('SELECT * FROM novels WHERE id = ?').get(novelId);
   audit(req.user, 'create_novel', `创建《${novel.title}》 (${chapters.length} 章)`, req.ip);
-  // 异步刮削：LLM 补全简介/标签（不阻塞上传，失败静默）
+  // 异步刮削：起点/LLM 补全元数据（不阻塞上传，失败静默）
   scrapeMetadata(novel.title, novel.author, chapters)
-    .then(meta => {
-      if (meta.description || meta.tags.length) {
-        db.prepare('UPDATE novels SET description = ?, tags = ? WHERE id = ?')
-          .run(meta.description, JSON.stringify(meta.tags), novelId);
-      }
-    })
+    .then(meta => applyScrapeResult(novelId, meta))
     .catch(() => {});
   res.status(201).json({ ok: true, novel: novelPublic(novel) });
 });
@@ -622,14 +617,9 @@ router.post('/scan', requireAuth, requireAdmin, (req, res) => {
         if (!fs.existsSync(srcTarget)) fs.renameSync(filePath, srcTarget);
         imported++;
         audit(req.user, 'scan_import', `扫描导入《${title}》 (${chapters.length} 章)`, req.ip);
-        // 异步刮削：LLM 补全简介/标签（不阻塞导入，失败静默）
+        // 异步刮削：起点/LLM 补全元数据（不阻塞导入，失败静默）
         scrapeMetadata(title, author, chapters)
-          .then(meta => {
-            if (meta.description || meta.tags.length) {
-              db.prepare('UPDATE novels SET description = ?, tags = ? WHERE id = ?')
-                .run(meta.description, JSON.stringify(meta.tags), novelId);
-            }
-          })
+          .then(meta => applyScrapeResult(novelId, meta))
           .catch(() => {});
       } catch (e) {
         errors.push(`${file}: ${e.message}`);

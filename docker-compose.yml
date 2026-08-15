@@ -1,7 +1,6 @@
 services:
   novel-site:
-    build: .
-    image: novel-site:latest
+    image: ghcr.io/miku-hermes/novel-site:latest
     container_name: novel-site
     restart: unless-stopped
     networks:

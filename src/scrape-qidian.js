@@ -37,7 +37,7 @@ async function scrapeQidian(title) {
     category: d.category,
     status: d.status,
     tags: (d.tags || []).filter(Boolean),
-    cover_url: d.cover_url || '',
+    cover_url: d.cover_url || '',  // 已由 scraper-api 转为 /300 大图
     bid: d.bid,
   };
 }

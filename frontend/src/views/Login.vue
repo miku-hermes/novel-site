@@ -144,7 +144,7 @@ async function doRegister() {
         <div class="field"><label>密码</label><input v-model="regForm.password" type="password" placeholder="至少 8 位，含字母和数字"></div>
         <div class="field"><label>确认密码</label><input v-model="regForm.password2" type="password"></div>
         <button class="btn btn-primary w-full" @click="doRegister">{{ needsSetup ? '创建并进入' : '注 册' }}</button>
-        <div class="auth-switch"><a href="#" @click.prevent="view = 'login'">← 返回登录</a></div>
+        <div v-if="!needsSetup" class="auth-switch"><a href="#" @click.prevent="view = 'login'">← 返回登录</a></div>
       </div>
 
       <!-- 2FA 验证 -->

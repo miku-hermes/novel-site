@@ -17,8 +17,10 @@ services:
       - BACKUP_PASSWORD=${BACKUP_PASSWORD}
       - ALLOW_REGISTER=${ALLOW_REGISTER:-true}
       - SITE_NAME=${SITE_NAME:-喵的书架}
-      # 刮削系统：DeepSeek API Key（可选，未配置则刮削静默跳过）
+      # 刮削系统：DeepSeek API Key（可选，未配置则 LLM 刮削跳过）
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      # 刮削系统：自建 scraper-api 服务（起点刮削，内部 Camofox）
+      - SCRAPER_API_URL=http://172.18.0.10:3200
     # 内网访问，不暴露宿主机端口，由 1Panel 反代
     expose:
       - "3000"

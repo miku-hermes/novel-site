@@ -174,6 +174,13 @@ router.post('/', requireAuth, uploadDisk.single('file'), (req, res) => {
       return res.status(400).json({ error: `解析失败: ${e.message}` });
     }
     releaseParseSlot();
+    // 保留源文件到统一书库目录（books/<书名>/book.txt）
+    try {
+      const bookDir = path.join(BOOKS_DIR, safeBookName(String(title).trim()));
+      fs.mkdirSync(bookDir, { recursive: true });
+      const srcTarget = path.join(bookDir, 'book' + ext);
+      if (!fs.existsSync(srcTarget)) fs.copyFileSync(tmpPath, srcTarget);
+    } catch (e) { /* 源文件保存失败不影响主流程 */ }
     safeUnlink(tmpPath);
     if (chapters.length === 0) return res.status(400).json({ error: '文件中没有可读内容' });
   }
@@ -499,18 +506,24 @@ function buildEpub(novel, chapters) {
 }
 
 // ---------- 扫描文件夹导入（管理员） ----------
-// 把 data/import/ 下的 .txt 整本书解析后写入 books/<书名>/<idx>.txt，元信息入 DB
+// 统一目录：data/books/ 下
+//   books/<书名>.txt              → 整本书源文件（扫描识别）
+//   books/<书名>/<idx>.txt        → 解析后的章节文件
+//   books/<书名>/book.txt         → 解析后保留的源文件
 router.post('/scan', requireAuth, requireAdmin, (req, res) => {
-  const IMPORT_DIR = path.join(BOOKS_DIR, '..', 'import');
-  fs.mkdirSync(IMPORT_DIR, { recursive: true });
-  const files = fs.readdirSync(IMPORT_DIR).filter(f => f.toLowerCase().endsWith('.txt'));
-  if (files.length === 0) return res.json({ ok: true, imported: 0, skipped: 0, errors: [], message: 'import 目录没有 TXT 文件' });
+  fs.mkdirSync(BOOKS_DIR, { recursive: true });
+  // 只扫 books/ 根目录（非递归），避免把章节文件误当整本书
+  const files = fs.readdirSync(BOOKS_DIR).filter(f => {
+    if (!f.toLowerCase().endsWith('.txt')) return false;
+    return fs.statSync(path.join(BOOKS_DIR, f)).isFile();
+  });
+  if (files.length === 0) return res.json({ ok: true, imported: 0, skipped: 0, errors: [], message: 'books 目录没有待导入的 TXT' });
 
   let imported = 0, skipped = 0;
   const errors = [];
   const tx = db.transaction(() => {
     for (const file of files) {
-      const filePath = path.join(IMPORT_DIR, file);
+      const filePath = path.join(BOOKS_DIR, file);
       try {
         const raw = fs.readFileSync(filePath, 'utf8');
         // 书名默认取文件名（去扩展名）；支持「书名 - 作者.txt」格式
@@ -535,6 +548,11 @@ router.post('/scan', requireAuth, requireAdmin, (req, res) => {
           ins.run(novelId, ch.idx, String(ch.title || `第 ${ch.idx + 1} 章`).slice(0, 120), '', rel, ch.words_count || content.replace(/\s/g, '').length);
         }
         recomputeNovel(novelId);
+        // 把源文件移入书目录，统一管理（books/<书名>/book.txt）
+        const bookDir = path.join(BOOKS_DIR, safeBookName(title));
+        fs.mkdirSync(bookDir, { recursive: true });
+        const srcTarget = path.join(bookDir, 'book.txt');
+        if (!fs.existsSync(srcTarget)) fs.renameSync(filePath, srcTarget);
         imported++;
         audit(req.user, 'scan_import', `扫描导入《${title}》 (${chapters.length} 章)`, req.ip);
       } catch (e) {

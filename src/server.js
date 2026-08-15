@@ -95,7 +95,12 @@ app.get('/api/files/:name', requireAuth, (req, res) => {
 
 // 站点名注入（供前端显示，无需登录）
 app.get('/api/site', (req, res) => {
-  res.json({ name: getSetting('site_name', '喵的书架'), allow_register: getSetting('allow_register', 'true') });
+  const userCount = db.prepare('SELECT COUNT(*) c FROM users').get().c;
+  res.json({
+    name: getSetting('site_name', '喵的书架'),
+    allow_register: getSetting('allow_register', 'true'),
+    needs_setup: userCount === 0,   // 无任何用户 → 引导创建首个账号
+  });
 });
 
 // 路由

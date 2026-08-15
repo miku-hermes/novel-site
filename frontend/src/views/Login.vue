@@ -7,6 +7,7 @@ const router = useRouter();
 const view = ref('login'); // login | register | 2fa | setup | recovery
 const siteName = ref('喵的书架');
 const allowRegister = ref(true);
+const needsSetup = ref(false);   // 无用户 → 引导模式
 
 const loginForm = ref({ username: '', password: '' });
 const regForm = ref({ username: '', password: '', password2: '' });
@@ -19,7 +20,14 @@ const errMsg = ref('');
 const pendingToken = ref(null);
 
 onMounted(async () => {
-  try { const s = await api.get('/api/site'); siteName.value = s.name; allowRegister.value = s.allow_register !== 'false'; } catch (e) {}
+  try {
+    const s = await api.get('/api/site');
+    siteName.value = s.name;
+    allowRegister.value = s.allow_register !== 'false';
+    needsSetup.value = !!s.needs_setup;
+    // 引导模式：无任何用户 → 直接显示注册表单
+    if (s.needs_setup && s.allow_register !== 'false') view.value = 'register';
+  } catch (e) {}
   try { await api.get('/api/auth/me'); router.push('/home'); } catch (e) {}
 });
 
@@ -76,12 +84,21 @@ async function doRegister() {
   try {
     const d = await api.post('/api/auth/register', { username: f.username, password: f.password });
     if (d.is_admin) toast('注册成功！你是本站管理员');
-    view.value = 'login';
-    loginForm.value.username = f.username;
-    loginForm.value.password = '';
-    errMsg.value = '注册成功，请登录';
-    errMsg.value = '';
-    toast('注册成功，请登录');
+    // 引导模式：注册后自动登录（2FA 可选，未开启直接成功）
+    try {
+      const login = await api.post('/api/auth/login', { username: f.username, password: f.password });
+      if (login.ok || !login.pending_token) { router.push('/home'); return; }
+      pendingToken.value = login.pending_token;
+      if (login.need_2fa_setup) { await loadSetupQr(); }
+      else if (login.need_2fa) { view.value = '2fa'; }
+    } catch (e2) {
+      // 自动登录失败 → 回登录页
+      view.value = 'login';
+      loginForm.value.username = f.username;
+      loginForm.value.password = '';
+      errMsg.value = '注册成功，请登录';
+      toast('注册成功，请登录');
+    }
   } catch (e) { errMsg.value = e.message; }
 }
 </script>
@@ -92,7 +109,17 @@ async function doRegister() {
       <div class="auth-brand">
         <span class="auth-logo i-mdi-bookshelf"></span>
         <h1>{{ siteName }}</h1>
-        <p>登录以继续阅读</p>
+        <p v-if="needsSetup">欢迎！创建第一个账号开始使用</p>
+        <p v-else>登录以继续阅读</p>
+      </div>
+
+      <!-- 引导横幅（无用户时） -->
+      <div v-if="needsSetup" class="setup-banner">
+        <span class="i-mdi-rocket-launch setup-banner-icon"></span>
+        <div>
+          <b>首次使用？创建你的账号</b>
+          <p>第一个注册的账号自动成为本站管理员</p>
+        </div>
       </div>
 
       <!-- 登录 -->
@@ -112,10 +139,11 @@ async function doRegister() {
 
       <!-- 注册 -->
       <div v-else-if="view === 'register'">
+        <p v-if="needsSetup" class="auth-hint setup-hint">✨ 你将创建本站的第一个账号，并成为管理员</p>
         <div class="field"><label>用户名</label><input v-model="regForm.username" placeholder="2-20 位字母/数字/下划线/中文"></div>
         <div class="field"><label>密码</label><input v-model="regForm.password" type="password" placeholder="至少 8 位，含字母和数字"></div>
         <div class="field"><label>确认密码</label><input v-model="regForm.password2" type="password"></div>
-        <button class="btn btn-primary w-full" @click="doRegister">注 册</button>
+        <button class="btn btn-primary w-full" @click="doRegister">{{ needsSetup ? '创建并进入' : '注 册' }}</button>
         <div class="auth-switch"><a href="#" @click.prevent="view = 'login'">← 返回登录</a></div>
       </div>
 
@@ -132,7 +160,7 @@ async function doRegister() {
       <!-- 2FA 绑定 -->
       <div v-else-if="view === 'setup'">
         <h2 class="auth-subtitle">绑定两步验证</h2>
-        <p class="auth-hint">本站强制开启 2FA，请用验证器 App 扫描二维码</p>
+        <p class="auth-hint">建议开启 2FA（可选），用验证器 App 扫描二维码</p>
         <div class="qr-box"><img :src="setupQr" alt="QR"></div>
         <p class="auth-hint">无法扫码时手动输入密钥：<b>{{ setupSecret }}</b></p>
         <div class="field">
@@ -178,6 +206,15 @@ async function doRegister() {
 .recovery-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 16px 0; }
 .recovery-item { background: var(--brand-soft); border: 1px solid rgba(124,92,191,.18); border-radius: 8px; padding: 8px; text-align: center; font-family: ui-monospace, monospace; font-size: 13px; }
 .w-full { width: 100%; }
+.setup-banner {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 22px; padding: 14px 16px;
+  background: linear-gradient(135deg, rgba(124,92,191,.08), rgba(179,136,255,.14));
+  border: 1px solid rgba(124,92,191,.2); border-radius: 14px;
+}
+.setup-banner-icon { font-size: 26px; color: var(--brand); flex-shrink: 0; }
+.setup-banner b { font-size: 14px; color: var(--brand); }
+.setup-banner p { font-size: 12.5px; color: var(--ink-dim); margin-top: 2px; }
+.setup-hint { color: var(--brand); font-weight: 600; }
 /* 移动端适配 */
 @media (max-width: 768px) {
   .auth-wrap { padding: 16px; }

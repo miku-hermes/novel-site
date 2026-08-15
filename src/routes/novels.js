@@ -4,7 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const router = express.Router();
-const { db, UPLOAD_DIR, audit } = require('../db');
+const { db, UPLOAD_DIR, BOOKS_DIR, audit } = require('../db');
 const { requireAuth, requireAdmin } = require('./auth');
 const { rateLimit } = require('../security');
 const { parseTxt } = require('../parsers/txt');
@@ -14,6 +14,46 @@ const MAX_TXT = 50 * 1024 * 1024;   // 50MB
 const MAX_EPUB = 30 * 1024 * 1024;
 const MAX_COVER = 5 * 1024 * 1024;
 const MAX_CHAPTER_LEN = 2 * 1024 * 1024;
+
+// ---------- 章节正文文件存储辅助 ----------
+// 书籍目录结构：BOOKS_DIR/<书名>/<idx>.txt （书名做安全转义，防路径穿越）
+function safeBookName(name) {
+  return String(name || 'novel').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').slice(0, 80) || 'novel';
+}
+function chapterRelPath(novelTitle, idx) {
+  return path.join('books', safeBookName(novelTitle), `${idx}.txt`);
+}
+function chapterAbsPath(rel) {
+  // 只允许 books/ 下的相对路径
+  if (!rel || !rel.startsWith('books' + path.sep)) return null;
+  const abs = path.resolve(BOOKS_DIR, rel.replace(/^books[\\/]/, ''));
+  if (!abs.startsWith(path.resolve(BOOKS_DIR) + path.sep) && abs !== path.resolve(BOOKS_DIR)) return null; // 防穿越
+  return abs;
+}
+function writeChapterFile(novelTitle, idx, content) {
+  const rel = chapterRelPath(novelTitle, idx);
+  const abs = chapterAbsPath(rel);
+  fs.mkdirSync(path.dirname(abs), { recursive: true });
+  fs.writeFileSync(abs, content, 'utf8');
+  return rel;
+}
+function readChapterFile(rel) {
+  const abs = chapterAbsPath(rel);
+  if (!abs || !fs.existsSync(abs)) return null;
+  return fs.readFileSync(abs, 'utf8');
+}
+function deleteChapterFile(rel) {
+  const abs = chapterAbsPath(rel);
+  if (abs && fs.existsSync(abs)) fs.unlinkSync(abs);
+}
+// 读取章节正文：优先 file_path 文件，回退 content 字段（旧数据）
+function chapterContent(ch) {
+  if (ch.file_path) {
+    const c = readChapterFile(ch.file_path);
+    if (c !== null) return c;
+  }
+  return ch.content || '';
+}
 
 // 磁盘临时存储（避免大文件全量进内存，1.9GB 服务器防 OOM）
 const os = require('os');
@@ -148,9 +188,11 @@ router.post('/', requireAuth, uploadDisk.single('file'), (req, res) => {
     ).run(titleClean, authorClean, String(description).slice(0, 5000), JSON.stringify(tagArr), status === 'draft' ? 'draft' : 'published', req.user.id);
     const novelId = info.lastInsertRowid;
     if (chapters.length) {
-      const ins = db.prepare('INSERT INTO chapters (novel_id, idx, title, content, words_count) VALUES (?, ?, ?, ?, ?)');
+      const ins = db.prepare('INSERT INTO chapters (novel_id, idx, title, content, file_path, words_count) VALUES (?, ?, ?, ?, ?, ?)');
       for (const ch of chapters) {
-        ins.run(novelId, ch.idx, String(ch.title || `第 ${ch.idx + 1} 章`).slice(0, 120), ch.content.slice(0, MAX_CHAPTER_LEN), ch.words_count || ch.content.replace(/\s/g, '').length);
+        const content = String(ch.content || '').slice(0, MAX_CHAPTER_LEN);
+        const rel = writeChapterFile(titleClean, ch.idx, content);
+        ins.run(novelId, ch.idx, String(ch.title || `第 ${ch.idx + 1} 章`).slice(0, 120), '', rel, ch.words_count || content.replace(/\s/g, '').length);
       }
       recomputeNovel(novelId);
     }
@@ -208,6 +250,8 @@ router.delete('/:id', requireAuth, requireAdmin, (req, res) => {
   if (row.cover_path) {
     try { fs.unlinkSync(path.join(UPLOAD_DIR, row.cover_path)); } catch (e) {}
   }
+  // 清理正文 TXT 目录（books/<书名>/）
+  try { fs.rmSync(path.join(BOOKS_DIR, safeBookName(row.title)), { recursive: true, force: true }); } catch (e) {}
   audit(req.user, 'delete_novel', `删除《${row.title}》`, req.ip);
   res.json({ ok: true });
 });
@@ -251,7 +295,7 @@ router.get('/:id/chapters/:cid', requireAuth, (req, res) => {
       VALUES (?, ?, ?, 0, datetime('now'))
       ON CONFLICT(user_id, novel_id) DO UPDATE SET chapter_id = excluded.chapter_id, updated_at = excluded.updated_at`)
     .run(req.user.id, row.id, ch.id);
-  res.json({ chapter: { id: ch.id, novel_id: ch.novel_id, idx: ch.idx, title: ch.title, content: ch.content, words_count: ch.words_count } });
+  res.json({ chapter: { id: ch.id, novel_id: ch.novel_id, idx: ch.idx, title: ch.title, content: chapterContent(ch), words_count: ch.words_count } });
 });
 
 function rowId(id) { return parseInt(id, 10); }
@@ -264,7 +308,14 @@ router.put('/chapters/:cid', requireAuth, requireAdmin, (req, res) => {
   if (title !== undefined) db.prepare('UPDATE chapters SET title = ? WHERE id = ?').run(String(title).trim().slice(0, 120), ch.id);
   if (content !== undefined) {
     const c = String(content).slice(0, MAX_CHAPTER_LEN);
-    db.prepare('UPDATE chapters SET content = ?, words_count = ? WHERE id = ?').run(c, c.replace(/\s/g, '').length, ch.id);
+    if (ch.file_path) {
+      // 文件存储：更新文件内容（文件名基于 idx，若 idx 不变直接覆盖）
+      const novel = db.prepare('SELECT title FROM novels WHERE id = ?').get(ch.novel_id);
+      writeChapterFile(novel.title, ch.idx, c);
+    } else {
+      db.prepare('UPDATE chapters SET content = ? WHERE id = ?').run(c, ch.id);
+    }
+    db.prepare('UPDATE chapters SET words_count = ? WHERE id = ?').run(c.replace(/\s/g, '').length, ch.id);
   }
   recomputeNovel(ch.novel_id);
   audit(req.user, 'update_chapter', `编辑章节 ${ch.id}`, req.ip);
@@ -273,15 +324,17 @@ router.put('/chapters/:cid', requireAuth, requireAdmin, (req, res) => {
 
 // ---------- 新增章节（管理员） ----------
 router.post('/chapters', requireAuth, requireAdmin, (req, res) => {
-  const { novel_id, title, content = '', after_idx } = req.body || {};
+  const { novel_id, title, content: contentRaw = '', after_idx } = req.body || {};
   const novel = db.prepare('SELECT id FROM novels WHERE id = ?').get(parseInt(novel_id, 10));
   if (!novel) return res.status(404).json({ error: '小说不存在' });
   const maxIdx = db.prepare('SELECT COALESCE(MAX(idx), -1) m FROM chapters WHERE novel_id = ?').get(novel.id).m;
   const idx = after_idx !== undefined ? Math.max(0, Math.min(parseInt(after_idx, 10) + 1, maxIdx + 1)) : maxIdx + 1;
   const tx = db.transaction(() => {
     db.prepare('UPDATE chapters SET idx = idx + 1 WHERE novel_id = ? AND idx >= ?').run(novel.id, idx);
-    db.prepare('INSERT INTO chapters (novel_id, idx, title, content, words_count) VALUES (?, ?, ?, ?, ?)')
-      .run(novel.id, idx, String(title || `第 ${idx + 1} 章`).slice(0, 120), String(content).slice(0, MAX_CHAPTER_LEN), String(content).replace(/\s/g, '').length);
+    const content = String(contentRaw || '').slice(0, MAX_CHAPTER_LEN);
+    const rel = writeChapterFile(novel.title, idx, content);
+    db.prepare('INSERT INTO chapters (novel_id, idx, title, content, file_path, words_count) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(novel.id, idx, String(title || `第 ${idx + 1} 章`).slice(0, 120), '', rel, content.replace(/\s/g, '').length);
   });
   tx();
   recomputeNovel(novel.id);
@@ -294,6 +347,21 @@ router.delete('/chapters/:cid', requireAuth, requireAdmin, (req, res) => {
   const ch = db.prepare('SELECT * FROM chapters WHERE id = ?').get(req.params.cid);
   if (!ch) return res.status(404).json({ error: '章节不存在' });
   db.prepare('DELETE FROM chapters WHERE id = ?').run(ch.id);
+  // 文件存储：删除章节文件，并把 idx 大于被删章节的文件前移一位
+  const novel = db.prepare('SELECT title FROM novels WHERE id = ?').get(ch.novel_id);
+  if (novel) {
+    deleteChapterFile(chapterRelPath(novel.title, ch.idx));
+    const after = db.prepare('SELECT id, idx FROM chapters WHERE novel_id = ? AND idx > ? ORDER BY idx').all(ch.novel_id, ch.idx);
+    for (const a of after) {
+      const oldRel = chapterRelPath(novel.title, a.idx);
+      const newRel = chapterRelPath(novel.title, a.idx - 1);
+      const absOld = chapterAbsPath(oldRel);
+      if (absOld && fs.existsSync(absOld)) {
+        fs.mkdirSync(path.dirname(chapterAbsPath(newRel)), { recursive: true });
+        fs.renameSync(absOld, chapterAbsPath(newRel));
+      }
+    }
+  }
   db.prepare('UPDATE chapters SET idx = idx - 1 WHERE novel_id = ? AND idx > ?').run(ch.novel_id, ch.idx);
   recomputeNovel(ch.novel_id);
   audit(req.user, 'delete_chapter', `删除章节 ${ch.id}`, req.ip);
@@ -304,7 +372,9 @@ router.delete('/chapters/:cid', requireAuth, requireAdmin, (req, res) => {
 router.get('/:id/download', requireAuth, (req, res) => {
   const novel = findNovel(req.params.id);
   if (!novel) return res.status(404).json({ error: '小说不存在' });
-  const chapters = db.prepare('SELECT idx, title, content FROM chapters WHERE novel_id = ? ORDER BY idx').all(novel.id);
+  const chapters = db.prepare('SELECT idx, title, content, file_path FROM chapters WHERE novel_id = ? ORDER BY idx').all(novel.id);
+  // 从文件读取正文（file_path 优先）
+  for (const c of chapters) c.content = chapterContent(c);
   const format = String(req.query.format || 'txt').toLowerCase();
   const safeName = (novel.title || 'novel').replace(/[\\/:*?"<>|]/g, '_').slice(0, 60);
   const filename = `${safeName}.${format === 'epub' ? 'epub' : 'txt'}`;
@@ -427,5 +497,53 @@ function buildEpub(novel, chapters) {
   end.writeUInt32LE(offset, 16);
   return Buffer.concat([out, central, end]);
 }
+
+// ---------- 扫描文件夹导入（管理员） ----------
+// 把 data/import/ 下的 .txt 整本书解析后写入 books/<书名>/<idx>.txt，元信息入 DB
+router.post('/scan', requireAuth, requireAdmin, (req, res) => {
+  const IMPORT_DIR = path.join(BOOKS_DIR, '..', 'import');
+  fs.mkdirSync(IMPORT_DIR, { recursive: true });
+  const files = fs.readdirSync(IMPORT_DIR).filter(f => f.toLowerCase().endsWith('.txt'));
+  if (files.length === 0) return res.json({ ok: true, imported: 0, skipped: 0, errors: [], message: 'import 目录没有 TXT 文件' });
+
+  let imported = 0, skipped = 0;
+  const errors = [];
+  const tx = db.transaction(() => {
+    for (const file of files) {
+      const filePath = path.join(IMPORT_DIR, file);
+      try {
+        const raw = fs.readFileSync(filePath, 'utf8');
+        // 书名默认取文件名（去扩展名）；支持「书名 - 作者.txt」格式
+        let title = path.basename(file, '.txt').trim().slice(0, 120);
+        let author = '';
+        const dash = title.lastIndexOf(' - ');
+        if (dash > 0) { author = title.slice(dash + 3).trim().slice(0, 60); title = title.slice(0, dash).trim(); }
+        if (!title) { skipped++; errors.push(`${file}: 无法确定书名`); continue; }
+        // 已存在同名书则跳过（不覆盖）
+        const exists = db.prepare('SELECT id FROM novels WHERE title = ?').get(title);
+        if (exists) { skipped++; errors.push(`${file}: 《${title}》已存在，跳过`); continue; }
+        const chapters = parseTxt(raw);
+        if (chapters.length === 0) { skipped++; errors.push(`${file}: 没有可读内容`); continue; }
+        const info = db.prepare(
+          'INSERT INTO novels (title, author, description, tags, status, created_by) VALUES (?, ?, ?, ?, ?, ?)'
+        ).run(title, author, '', '[]', 'published', req.user.id);
+        const novelId = info.lastInsertRowid;
+        const ins = db.prepare('INSERT INTO chapters (novel_id, idx, title, content, file_path, words_count) VALUES (?, ?, ?, ?, ?, ?)');
+        for (const ch of chapters) {
+          const content = String(ch.content || '').slice(0, MAX_CHAPTER_LEN);
+          const rel = writeChapterFile(title, ch.idx, content);
+          ins.run(novelId, ch.idx, String(ch.title || `第 ${ch.idx + 1} 章`).slice(0, 120), '', rel, ch.words_count || content.replace(/\s/g, '').length);
+        }
+        recomputeNovel(novelId);
+        imported++;
+        audit(req.user, 'scan_import', `扫描导入《${title}》 (${chapters.length} 章)`, req.ip);
+      } catch (e) {
+        errors.push(`${file}: ${e.message}`);
+      }
+    }
+  });
+  tx();
+  res.json({ ok: true, imported, skipped, errors });
+});
 
 module.exports = router;

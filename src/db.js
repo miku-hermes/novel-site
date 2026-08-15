@@ -5,7 +5,8 @@ const Database = require('better-sqlite3');
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 const BACKUP_DIR = path.join(DATA_DIR, 'backups');
-for (const d of [DATA_DIR, UPLOAD_DIR, BACKUP_DIR]) {
+const BOOKS_DIR = path.join(DATA_DIR, 'books');   // 书籍正文 TXT 目录
+for (const d of [DATA_DIR, UPLOAD_DIR, BACKUP_DIR, BOOKS_DIR]) {
   if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
 }
 
@@ -47,7 +48,8 @@ CREATE TABLE IF NOT EXISTS chapters (
   novel_id    INTEGER NOT NULL REFERENCES novels(id) ON DELETE CASCADE,
   idx         INTEGER NOT NULL,                         -- 章节顺序
   title       TEXT NOT NULL,
-  content     TEXT NOT NULL DEFAULT '',
+  content     TEXT NOT NULL DEFAULT '',                -- 兼容旧数据；新数据走 file_path
+  file_path   TEXT,                                    -- 正文 TXT 文件相对路径（books/<书名>/<idx>.txt）
   words_count INTEGER NOT NULL DEFAULT 0,
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -111,4 +113,4 @@ function audit(user, action, detail = '', ip = '') {
   } catch (e) { /* audit must never crash */ }
 }
 
-module.exports = { db, DATA_DIR, UPLOAD_DIR, BACKUP_DIR, getSetting, setSetting, audit };
+module.exports = { db, DATA_DIR, UPLOAD_DIR, BACKUP_DIR, BOOKS_DIR, getSetting, setSetting, audit };

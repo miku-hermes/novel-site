@@ -81,6 +81,16 @@ async function removeNovel(n) {
   try { await api.del('/api/novels/' + n.id); toast('已删除'); loadNovels(); loadOverview(); } catch (e) { toast(e.message, true); }
 }
 
+// 手动刮削：LLM 补全简介/标签
+async function scrapeNovel(n) {
+  if (!confirm(`对《${n.title}》执行刮削？（用 LLM 生成简介和标签）`)) return;
+  try {
+    const d = await api.post('/api/admin/scrape/' + n.id, {});
+    toast('刮削完成，简介/标签已更新');
+    loadNovels();
+  } catch (e) { toast(e.message, true); }
+}
+
 async function toggleUser(u) {
   const next = u.status === 'active' ? 'disabled' : 'active';
   if (!confirm(`确定${next === 'disabled' ? '禁用' : '启用'}用户 ${u.username}？`)) return;
@@ -170,6 +180,7 @@ onMounted(() => { loadOverview(); loadUsers(); loadBackups(); loadLogs(); loadSe
               <td>{{ n.status === 'draft' ? '草稿' : '已发布' }}</td>
               <td>
                 <button class="btn btn-ghost btn-sm" @click="openEdit(n)"><span class="i-mdi-pencil-outline mi"></span>编辑</button>
+                <button class="btn btn-ghost btn-sm" @click="scrapeNovel(n)"><span class="i-mdi-auto-fix mi"></span>刮削</button>
                 <button class="btn btn-ghost btn-sm" @click="pickCover(n)"><span class="i-mdi-image-outline mi"></span>换封面</button>
                 <button class="btn btn-danger btn-sm" @click="removeNovel(n)">删除</button>
               </td>

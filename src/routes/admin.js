@@ -232,4 +232,18 @@ router.post('/restore', requireAuth, requireAdmin, uploadRestore.single('file'),
   setTimeout(() => process.exit(0), 800);
 });
 
+// ---------- 手动刮削（管理员）：LLM 补全某本书的简介/标签 ----------
+router.post('/scrape/:novelId', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { scrapeNovel, SCRAPE_ENABLED } = require('../scrape');
+    if (!SCRAPE_ENABLED) return res.status(400).json({ error: '未配置 DEEPSEEK_API_KEY，无法刮削' });
+    const result = await scrapeNovel(parseInt(req.params.novelId, 10));
+    if (!result.ok) return res.status(400).json({ error: result.error });
+    audit(req.user, 'scrape', `刮削《${result.title || ''}》`, req.ip);
+    res.json({ ok: true, description: result.description, tags: result.tags });
+  } catch (e) {
+    res.status(500).json({ error: `刮削失败: ${e.message}` });
+  }
+});
+
 module.exports = router;

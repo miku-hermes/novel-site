@@ -17,6 +17,8 @@ services:
       - BACKUP_PASSWORD=${BACKUP_PASSWORD}
       - ALLOW_REGISTER=${ALLOW_REGISTER:-true}
       - SITE_NAME=${SITE_NAME:-喵的书架}
+      # 刮削系统：DeepSeek API Key（可选，未配置则刮削静默跳过）
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
     # 内网访问，不暴露宿主机端口，由 1Panel 反代
     expose:
       - "3000"

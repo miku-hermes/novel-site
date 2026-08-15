@@ -231,13 +231,31 @@ router.put('/:id', requireAuth, requireAdmin, (req, res) => {
   const row = db.prepare('SELECT * FROM novels WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: '小说不存在' });
   const { title, author, description, tags, status } = req.body || {};
+  const newTitle = title !== undefined ? String(title).trim().slice(0, 120) : null;
+  // 改书名时同步迁移正文目录：books/<旧名>/ → books/<新名>/，并更新所有章节 file_path
+  if (newTitle && newTitle !== row.title) {
+    const oldDir = path.join(BOOKS_DIR, safeBookName(row.title));
+    const newDir = path.join(BOOKS_DIR, safeBookName(newTitle));
+    if (fs.existsSync(oldDir) && !fs.existsSync(newDir)) {
+      fs.mkdirSync(path.dirname(newDir), { recursive: true });
+      fs.renameSync(oldDir, newDir);
+    }
+    // 更新 file_path：books/<旧名>/... → books/<新名>/...
+    const prefix = 'books' + path.sep + safeBookName(row.title);
+    const chapters = db.prepare("SELECT id, file_path FROM chapters WHERE novel_id = ? AND file_path LIKE ?").all(row.id, prefix + '%');
+    for (const c of chapters) {
+      if (!c.file_path) continue;
+      const newRel = 'books' + path.sep + safeBookName(newTitle) + c.file_path.slice(prefix.length);
+      db.prepare('UPDATE chapters SET file_path = ? WHERE id = ?').run(newRel, c.id);
+    }
+  }
   db.prepare(`UPDATE novels SET
       title = COALESCE(?, title), author = COALESCE(?, author),
       description = COALESCE(?, description), tags = COALESCE(?, tags),
       status = COALESCE(?, status), updated_at = datetime('now')
     WHERE id = ?`)
     .run(
-      title !== undefined ? String(title).trim().slice(0, 120) : null,
+      newTitle,
       author !== undefined ? String(author).trim().slice(0, 60) : null,
       description !== undefined ? String(description).slice(0, 5000) : null,
       tags !== undefined ? JSON.stringify(tagsToArr(tags)) : null,
@@ -316,9 +334,12 @@ router.put('/chapters/:cid', requireAuth, requireAdmin, (req, res) => {
   if (content !== undefined) {
     const c = String(content).slice(0, MAX_CHAPTER_LEN);
     if (ch.file_path) {
-      // 文件存储：更新文件内容（文件名基于 idx，若 idx 不变直接覆盖）
-      const novel = db.prepare('SELECT title FROM novels WHERE id = ?').get(ch.novel_id);
-      writeChapterFile(novel.title, ch.idx, c);
+      // 文件存储：直接覆盖 file_path 指向的文件（不按 idx 重算，避免插入后脱节）
+      const abs = chapterAbsPath(ch.file_path);
+      if (abs) {
+        fs.mkdirSync(path.dirname(abs), { recursive: true });
+        fs.writeFileSync(abs, c, 'utf8');
+      }
     } else {
       db.prepare('UPDATE chapters SET content = ? WHERE id = ?').run(c, ch.id);
     }
@@ -337,6 +358,23 @@ router.post('/chapters', requireAuth, requireAdmin, (req, res) => {
   const maxIdx = db.prepare('SELECT COALESCE(MAX(idx), -1) m FROM chapters WHERE novel_id = ?').get(novel.id).m;
   const idx = after_idx !== undefined ? Math.max(0, Math.min(parseInt(after_idx, 10) + 1, maxIdx + 1)) : maxIdx + 1;
   const tx = db.transaction(() => {
+    // 中间插入时，后续章节 idx+1，文件也要跟着改名（保持 file_path 与 idx 一致）
+    if (idx <= maxIdx) {
+      const novelTitle = novel.title;
+      const afters = db.prepare('SELECT id, idx, file_path FROM chapters WHERE novel_id = ? AND idx >= ? ORDER BY idx DESC').all(novel.id, idx);
+      for (const a of afters) {
+        const newIdx = a.idx + 1;
+        const newRel = chapterRelPath(novelTitle, newIdx);
+        if (a.file_path && a.file_path !== newRel) {
+          const absOld = chapterAbsPath(a.file_path);
+          if (absOld && fs.existsSync(absOld)) {
+            fs.mkdirSync(path.dirname(chapterAbsPath(newRel)), { recursive: true });
+            fs.renameSync(absOld, chapterAbsPath(newRel));
+          }
+          db.prepare('UPDATE chapters SET file_path = ? WHERE id = ?').run(newRel, a.id);
+        }
+      }
+    }
     db.prepare('UPDATE chapters SET idx = idx + 1 WHERE novel_id = ? AND idx >= ?').run(novel.id, idx);
     const content = String(contentRaw || '').slice(0, MAX_CHAPTER_LEN);
     const rel = writeChapterFile(novel.title, idx, content);

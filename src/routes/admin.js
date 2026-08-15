@@ -6,7 +6,7 @@ const crypto = require('crypto');
 const zlib = require('zlib');
 const archiver = require('archiver');
 const router = express.Router();
-const { db, DATA_DIR, UPLOAD_DIR, BACKUP_DIR, getSetting, setSetting, audit } = require('../db');
+const { db, DATA_DIR, UPLOAD_DIR, BACKUP_DIR, BOOKS_DIR, getSetting, setSetting, audit } = require('../db');
 const { requireAuth, requireAdmin } = require('./auth');
 const { hashPassword } = require('../security');
 
@@ -98,7 +98,7 @@ router.post('/backup', requireAuth, requireAdmin, async (req, res) => {
     const snapDir = path.join(DATA_DIR, '.snap');
     if (!fs.existsSync(snapDir)) fs.mkdirSync(snapDir);
     db.prepare('VACUUM INTO ?').run(path.join(snapDir, 'novel.db'));
-    await zipDir(zipPath, snapDir, UPLOAD_DIR);
+    await zipDir(zipPath, snapDir, UPLOAD_DIR, BOOKS_DIR);
     const size = fs.statSync(zipPath).size;
     audit(req.user, 'backup', `创建备份 ${path.basename(zipPath)} (${size} bytes)`, req.ip);
     res.json({ ok: true, file: path.basename(zipPath), size });
@@ -108,7 +108,8 @@ router.post('/backup', requireAuth, requireAdmin, async (req, res) => {
 });
 
 // 把目录打成加密 zip（AES-256-GCM，口令来自 BACKUP_PASSWORD）
-function zipDir(zipPath, snapDir, uploadDir) {
+// 打包：novel.db 快照 + uploads/（封面）+ books/（正文 TXT）
+function zipDir(zipPath, snapDir, uploadDir, booksDir) {
   return new Promise((resolve, reject) => {
     const archive = archiver('zip', { zlib: { level: 9 } });
     const out = fs.createWriteStream(zipPath);
@@ -119,6 +120,9 @@ function zipDir(zipPath, snapDir, uploadDir) {
     archive.file(path.join(snapDir, 'novel.db'), { name: 'novel.db' });
     if (fs.existsSync(uploadDir)) {
       archive.directory(uploadDir, 'uploads');
+    }
+    if (fs.existsSync(booksDir)) {
+      archive.directory(booksDir, 'books');
     }
     archive.append(Buffer.from(JSON.stringify({
       site_name: getSetting('site_name', '喵的书架'),
@@ -208,6 +212,12 @@ router.post('/restore', requireAuth, requireAdmin, uploadRestore.single('file'),
     fs.renameSync(path.join(tmp, 'novel.db'), path.join(DATA_DIR, 'novel.db'));
     if (fs.existsSync(path.join(tmp, 'uploads'))) fs.renameSync(path.join(tmp, 'uploads'), UPLOAD_DIR);
     if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+    // 恢复正文 TXT（books/）
+    if (fs.existsSync(path.join(tmp, 'books'))) {
+      if (fs.existsSync(BOOKS_DIR)) fs.renameSync(BOOKS_DIR, path.join(swapDir, 'books'));
+      fs.renameSync(path.join(tmp, 'books'), BOOKS_DIR);
+    }
+    if (!fs.existsSync(BOOKS_DIR)) fs.mkdirSync(BOOKS_DIR, { recursive: true });
   } catch (e) {
     // 回滚
     if (!fs.existsSync(path.join(DATA_DIR, 'novel.db')) && fs.existsSync(path.join(swapDir, 'novel.db'))) {

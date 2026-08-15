@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted } from 'vue';
-import { api, toast } from '../utils/api';
+import { api, toast, fmtTime } from '../utils/api';
 import AppTopbar from '../components/AppTopbar.vue';
 
 const me = ref(null);
@@ -87,7 +87,7 @@ async function disable2FA() {
         <div v-if="me" class="info-rows">
           <div class="info-row"><span>用户名</span><b>{{ me.username }}</b></div>
           <div class="info-row"><span>角色</span><b>{{ me.role === 'admin' ? '管理员' : '普通用户' }}</b></div>
-          <div class="info-row"><span>注册时间</span><b>{{ me.created_at ? me.created_at.replace('T',' ').slice(0,19) : '' }}</b></div>
+          <div class="info-row"><span>注册时间</span><b>{{ me.created_at ? fmtTime(me.created_at) : '' }}</b></div>
           <div class="info-row"><span>2FA</span><b :style="{ color: me.twofa_enabled ? 'var(--ok)' : 'var(--danger)' }">{{ me.twofa_enabled ? '已开启 ✓' : '未开启' }}</b></div>
         </div>
 

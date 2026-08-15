@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted } from 'vue';
-import { api, fmtWords, toast } from '../utils/api';
+import { api, fmtWords, fmtTime, toast } from '../utils/api';
 import { coverBg, coverChar } from '../utils/cover';
 import AppTopbar from '../components/AppTopbar.vue';
 
@@ -190,7 +190,7 @@ onMounted(() => { loadOverview(); loadUsers(); loadBackups(); loadLogs(); loadSe
               <td>{{ u.role === 'admin' ? '管理员' : '用户' }}</td>
               <td>{{ u.twofa_enabled ? '✓' : '✗' }}</td>
               <td :style="{ color: u.status === 'disabled' ? 'var(--danger)' : 'var(--ok)' }">{{ u.status === 'disabled' ? '禁用' : '正常' }}</td>
-              <td class="dim">{{ (u.created_at || '').replace('T',' ').slice(0,19) }}</td>
+              <td class="dim">{{ fmtTime(u.created_at) }}</td>
               <td>
                 <button class="btn btn-ghost btn-sm" @click="toggleUser(u)">{{ u.status === 'active' ? '禁用' : '启用' }}</button>
                 <button v-if="u.role === 'user'" class="btn btn-ghost btn-sm" @click="toggleRole(u)">设管理员</button>
@@ -236,7 +236,7 @@ onMounted(() => { loadOverview(); loadUsers(); loadBackups(); loadLogs(); loadSe
           <thead><tr><th>时间</th><th>用户</th><th>动作</th><th>详情</th><th>IP</th></tr></thead>
           <tbody>
             <tr v-for="l in logs" :key="l.id">
-              <td class="dim">{{ (l.created_at || '').replace('T',' ').slice(0,19) }}</td>
+              <td class="dim">{{ fmtTime(l.created_at) }}</td>
               <td>{{ l.username || '—' }}</td>
               <td>{{ l.action }}</td>
               <td class="dim log-detail">{{ l.detail }}</td>

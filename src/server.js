@@ -133,7 +133,27 @@ if (require.main === module) {
   const PORT = parseInt(process.env.PORT, 10) || 3000;
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[novel-site] listening on :${PORT} (${process.env.NODE_ENV === 'production' ? 'production' : 'development'})`);
+    startAutoScan();
   });
+}
+
+// ---------- 自动扫描（books/ 目录有新 TXT 自动导入） ----------
+const AUTO_SCAN_INTERVAL_MS = parseInt(process.env.AUTO_SCAN_INTERVAL || '120000', 10); // 默认 2 分钟
+let autoScanTimer = null;
+
+function startAutoScan() {
+  if (autoScanTimer) return;
+  console.log(`[auto-scan] 已启动：每 ${AUTO_SCAN_INTERVAL_MS / 1000}s 扫描 books/ 目录`);
+  // 启动时先扫一次（处理服务重启期间放入的文件）
+  try { novelsRouter.scanBooksDir({ id: 0, username: 'system' }); } catch (e) { console.error('[auto-scan] 启动扫描失败:', e.message); }
+  autoScanTimer = setInterval(() => {
+    try {
+      const r = novelsRouter.scanBooksDir({ id: 0, username: 'system' });
+      if (r.imported > 0) console.log(`[auto-scan] 导入 ${r.imported} 本书，跳过 ${r.skipped}`);
+    } catch (e) {
+      console.error('[auto-scan] 扫描失败:', e.message);
+    }
+  }, AUTO_SCAN_INTERVAL_MS);
 }
 
 module.exports = { createApp };

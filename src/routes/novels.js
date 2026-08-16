@@ -572,15 +572,23 @@ function buildEpub(novel, chapters) {
 //   books/<书名>.txt              → 整本书源文件（扫描识别）
 //   books/<书名>/<idx>.txt        → 解析后的章节文件
 //   books/<书名>/book.txt         → 解析后保留的源文件
-router.post('/scan', requireAuth, requireAdmin, (req, res) => {
+
+/**
+ * 扫描 books/ 根目录的整本书 TXT 并导入（可被路由/定时器复用）
+ * @param {object} actor 操作者（{id, username}，审计用；定时器可传系统占位）
+ * @returns {{ok: boolean, imported: number, skipped: number, errors: string[]}}
+ */
+function scanBooksDir(actor) {
   fs.mkdirSync(BOOKS_DIR, { recursive: true });
   // 只扫 books/ 根目录（非递归），避免把章节文件误当整本书
   const files = fs.readdirSync(BOOKS_DIR).filter(f => {
     if (!f.toLowerCase().endsWith('.txt')) return false;
     return fs.statSync(path.join(BOOKS_DIR, f)).isFile();
   });
-  if (files.length === 0) return res.json({ ok: true, imported: 0, skipped: 0, errors: [], message: 'books 目录没有待导入的 TXT' });
+  if (files.length === 0) return { ok: true, imported: 0, skipped: 0, errors: [], message: 'books 目录没有待导入的 TXT' };
 
+  const uid = actor ? (actor.id || 0) : 0;
+  const uname = actor ? (actor.username || 'system') : 'system';
   let imported = 0, skipped = 0;
   const errors = [];
   const tx = db.transaction(() => {
@@ -601,7 +609,7 @@ router.post('/scan', requireAuth, requireAdmin, (req, res) => {
         if (chapters.length === 0) { skipped++; errors.push(`${file}: 没有可读内容`); continue; }
         const info = db.prepare(
           'INSERT INTO novels (title, author, description, tags, status, created_by) VALUES (?, ?, ?, ?, ?, ?)'
-        ).run(title, author, '', '[]', 'published', req.user.id);
+        ).run(title, author, '', '[]', 'published', uid);
         const novelId = info.lastInsertRowid;
         const ins = db.prepare('INSERT INTO chapters (novel_id, idx, title, content, file_path, words_count) VALUES (?, ?, ?, ?, ?, ?)');
         for (const ch of chapters) {
@@ -616,7 +624,7 @@ router.post('/scan', requireAuth, requireAdmin, (req, res) => {
         const srcTarget = path.join(bookDir, 'book.txt');
         if (!fs.existsSync(srcTarget)) fs.renameSync(filePath, srcTarget);
         imported++;
-        audit(req.user, 'scan_import', `扫描导入《${title}》 (${chapters.length} 章)`, req.ip);
+        audit(actor || { id: 0, username: 'system' }, 'scan_import', `自动扫描导入《${title}》 (${chapters.length} 章)`, 'system');
         // 异步刮削：起点/LLM 补全元数据（不阻塞导入，失败静默）
         scrapeMetadata(title, author, chapters)
           .then(meta => applyScrapeResult(novelId, meta))
@@ -627,7 +635,13 @@ router.post('/scan', requireAuth, requireAdmin, (req, res) => {
     }
   });
   tx();
-  res.json({ ok: true, imported, skipped, errors });
+  return { ok: true, imported, skipped, errors };
+}
+
+router.post('/scan', requireAuth, requireAdmin, (req, res) => {
+  const r = scanBooksDir(req.user);
+  res.json(r);
 });
 
 module.exports = router;
+module.exports.scanBooksDir = scanBooksDir;
